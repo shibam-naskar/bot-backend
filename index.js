@@ -27,7 +27,7 @@ const allsessionObject = {};
 
 const client = new Client({
 	puppeteer: {
-		headless : false,
+		headless : true,
 		args: ["--no-sandbox"]
 	},
 	authStrategy: new LocalAuth({
@@ -37,7 +37,7 @@ const client = new Client({
 
 client.on('qr', (qr) => {
 	console.log('QR RECEIVED', qr);
-	// qrcode.generate(qr, {small: true});
+	qrcode.generate(qr, {small: true});
 });
 
 client.on('ready', () => {
