@@ -1,5 +1,5 @@
 const express = require("express")
-const { Client, LocalAuth } = require("whatsapp-web.js")
+const { Client, LocalAuth , MessageMedia } = require("whatsapp-web.js")
 const qrcode = require('qrcode-terminal');
 const schedule = require('node-schedule');
 const translate = require('translate-google');
@@ -8,6 +8,8 @@ const fs = require('fs');
 const app = express();
 const port = 3001;
 const http = require('http');
+const { Configuration, OpenAIApi } = require("openai");
+const gtts = require('gtts');
 const server = http.createServer(app);
 
 
@@ -23,6 +25,13 @@ let birthdayGroupIds = [];
 const GROUPS_DATA_FILE_PATH = './groupsData.json';
 const BIRTHDAYS_DATA_FILE_PATH = './birthdaysData.json';
 const JSERVICE_API_URL = 'http://jservice.io/api/random';
+const QUESTION_TIMEOUT = 20 * 1000;
+const OPENAI_API_KEY = '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';
+
+const configuration = new Configuration({
+	apiKey: OPENAI_API_KEY,
+});
+const openai = new OpenAIApi(configuration);
 
 
 
@@ -92,6 +101,9 @@ client.on('ready', () => {
 
 client.on('message', async (msg) => {
 	const chat = await msg.getChat();
+	const senderId = msg.from;
+	const body = msg.body.trim();
+	// const mentions = await msg.getMentions();
 
 	if (msg.body === '!ping') {
 		await msg.reply('Pong!');
@@ -184,20 +196,27 @@ client.on('message', async (msg) => {
 	else if (msg.body === '!riddle') {
 		const riddle = await getRandomRiddle();
 		const attempts = 3;
-	
+
 		const message = `
 	🤔 Riddle Challenge (${riddle.category}):
 	${riddle.question}
 	
 	You have ${attempts} attempts to guess the answer. Reply with !answer [your_answer].
 		`;
-	
+
 		chat.sendMessage(message);
 		riddleSessions.set(chat.id._serialized, { riddle, attempts });
-	  } else if (msg.body.toLowerCase().startsWith('!answer')) {
+	} else if (msg.body.toLowerCase().startsWith('!answer')) {
 		const answer = msg.body.split(' ')[1];
 		checkRiddleAnswer(chat, answer);
-	  }
+	}
+	else if (msg.body === '!rapidfire') {
+		startRapidFire(chat, senderId);
+	} else if (msg.body.toLowerCase().startsWith('!rfanswer')) {
+		checkRapidFireAnswer(chat, msg);
+	} else if (msg.body === '!endrapidfire') {
+		endRapidFire(chat, senderId);
+	}
 	else if (msg.body === '!help') {
 		const helpMessage = `🤖 *Bot Help Menu* 🤖\n\n` +
 			`🔸 *!ping*: Check if the bot is active and responsive.\n` +
@@ -205,16 +224,45 @@ client.on('message', async (msg) => {
 			`🔸 *!translate [language code] | [text]*: Translate text to the specified language. (e.g., !translate es | Hello)\n` +
 			`🔸 *!fortune*: Get a random fortune or a savage response from the Fortune Teller.\n` +
 			`🔸 *!joke*: Get a random Dad Joke from the hilarious Dad Joke collection.\n` +
-			`🔸 *!addbirthday [name] [date] [month] - Add a member's birthday to the birthday wisher list. Example: !addbirthday John 15 8 (15th August).\n` +
+			`🔸 *!addbirthday* [name] [date] [month] - Add a member's birthday to the birthday wisher list. Example: !addbirthday John 15 8 (15th August).\n` +
+			`🔸 *!rapidfire* - Start the Rapid Fire Questions game (group chat only) . \n` +
+			`🔸 *!rfanswer* [your_answer] - Answer the current Rapid Fire question . \n` +
+			`🔸 *!riddle*: Get a random riddle to solve. \n` +
+			`🔸 *!answer* <your_answer>*: Submit your answer to the current riddle. \n` +
+			`🔸 *@botname* <your_message>*: Chat with the bot using AI(OpenAI). (Mention the bot using its name)\n` +
 			`🔸 *!help*: Display this help menu.\n\n` +
 			`Enjoy interacting with the bot! 🔮`;
 
 		await msg.reply(helpMessage);
 	}
+	else if (msg.body.includes('@919144902571')) {
+		var messegenotmen = msg.body;
+		console.log("the Bot is Mentioned")
+		console.log(msg.mentionedIds)
+		msg.mentionedIds.forEach((mention) => {
+			var mennn = "@" + mention.replace("@c.us", "");
+			messegenotmen = messegenotmen.replace(mennn, "").trim();
+		})
+		console.log(messegenotmen)
+		handleAIChat(chat, messegenotmen);
+
+	} else if (body.startsWith('!say')) {
+		// handleTextToSpeech(chat, body);
+		await msg.reply("This command is under development")
+	}
+	//  else {
+	// 	// For other messages, enable AI chat functionality when the bot is mentioned
+	// 	// handleAIChat(chat, body);
+	// 	for(let contact of mentions) {
+	// 		console.log(msg.body)
+	// 	}
+	// }
 });
 
 
 client.initialize();
+
+const rapidFireSessions = new Map();
 
 function scheduleReminder(time, message, msg) {
 	const now = new Date();
@@ -380,45 +428,45 @@ async function sendBirthdayWishes() {
 
 async function getRandomRiddle() {
 	try {
-	  const response = await axios.get(JSERVICE_API_URL);
-	  const riddleData = response.data[0];
-	  console.log(riddleData)
-	  const category = riddleData?.category?.title || 'Unknown Category';
-	  const question = riddleData?.question || 'Could not fetch riddle.';
-	  const answer = riddleData?.answer || 'Could not fetch answer.';
-  
-	  return { category, question, answer };
+		const response = await axios.get(JSERVICE_API_URL);
+		const riddleData = response.data[0];
+		const category = riddleData?.category?.title || 'Unknown Category';
+		const question = riddleData?.question || 'Could not fetch riddle.';
+		const answer = riddleData?.answer || 'Could not fetch answer.';
+
+		return { category, question, answer };
 	} catch (error) {
-	  console.error('Error fetching riddle:', error.message);
-	  return {
-		category: 'Unknown Category',
-		question: 'Could not fetch riddle.',
-		answer: 'Could not fetch answer.',
-	  };
+		console.error('Error fetching riddle:', error.message);
+		return {
+			category: 'Unknown Category',
+			question: 'Could not fetch riddle.',
+			answer: 'Could not fetch answer.',
+		};
 	}
-  }
+}
 
 const riddleSessions = new Map();
 
 Client.prototype.sendRiddle = async function (attempts) {
 	const chat = this;
-	
+
 	try {
-	  const riddle = await getRandomRiddle();
-	  const message = `
-  🤔 Riddle Challenge (${riddle.category}):
-  ${riddle.question}
+		const riddle = await getRandomRiddle();
+		const message = `
+  🤔 Riddle Challenge (${riddle.category}):\n\n
+
+  ${riddle.question}\n\n
   
   You have ${attempts} attempts to guess the answer. Reply with !answer [your_answer].
 	  `;
-	
-	  chat.sendMessage(message);
-	  riddleSessions.set(chat.id._serialized, { riddle, attempts });
+
+		chat.sendMessage(message);
+		riddleSessions.set(chat.id._serialized, { riddle, attempts });
 	} catch (error) {
-	  console.error('Error sending riddle:', error.message);
-	  chat.sendMessage('⚠️ Error fetching riddle. Please try again later.');
+		console.error('Error sending riddle:', error.message);
+		chat.sendMessage('⚠️ Error fetching riddle. Please try again later.');
 	}
-  };
+};
 
 function checkRiddleAnswer(chat, answer) {
 	const session = riddleSessions.get(chat.id._serialized);
@@ -450,3 +498,216 @@ function checkRiddleAnswer(chat, answer) {
 }
 
 
+function generateTriviaQuestions(count = 5) {
+	// Generate trivia questions by fetching them from the API
+	const apiUrl = `https://opentdb.com/api.php?amount=5&difficulty=medium&type=multiple`;
+
+	return axios.get(apiUrl)
+		.then((response) => {
+			console.log(response.data)
+			if (response.data.results) {
+				return response.data.results.map((result) => {
+					const questionText = result.question;
+					const correctAnswer = result.correct_answer;
+					const incorrectAnswers = result.incorrect_answers;
+					const allAnswers = [correctAnswer, ...incorrectAnswers];
+
+					return {
+						questionText: questionText,
+						allAnswers: allAnswers,
+						answer: correctAnswer,
+					};
+				});
+			} else {
+				throw new Error('Failed to fetch trivia questions from the API.');
+			}
+		})
+		.catch((error) => {
+			console.error('Error fetching trivia questions:', error.message);
+			throw error;
+		});
+}
+
+async function askNextQuestion(chat) {
+	const session = rapidFireSessions.get(chat.id._serialized);
+
+	if (!session || session.questions.length === 0 || session.currentQuestionIndex >= session.questions.length - 1) {
+		endRapidFire(chat);
+		return;
+	}
+
+	session.currentQuestionIndex++;
+	const currentQuestion = session.questions[session.currentQuestionIndex];
+
+	const message = `
+  🔫 Rapid Fire Question ${session.currentQuestionIndex + 1}:\n\n
+
+
+  ${currentQuestion.questionText}\n\n
+
+
+  You have ${QUESTION_TIMEOUT / 1000} seconds to answer. Reply with '!rfanswer [your_answer]'.
+	`;
+
+	chat.sendMessage(message);
+
+	// Set a timer to reveal the answer after the timeout
+	session.timer = setTimeout(() => {
+		session.timer = null;
+		revealAnswer(chat, currentQuestion);
+	}, QUESTION_TIMEOUT);
+}
+
+async function revealAnswer(chat, question) {
+	if (!question) {
+		return;
+	}
+
+	chat.sendMessage(`⏰ Time's up! The correct answer is: ${question.answer}`);
+	// Continue to the next question or end the game
+	askNextQuestion(chat);
+}
+
+function isGroupChat(chat) {
+	return chat.isGroup;
+}
+
+async function startRapidFire(chat, count = 5) {
+	if (!isGroupChat(chat)) {
+		chat.sendMessage("⚠️ Rapid Fire Questions game can only be played in group chats.");
+		return;
+	}
+
+	if (rapidFireSessions.has(chat.id._serialized)) {
+		chat.sendMessage("⚠️ Rapid Fire Questions game is already in progress in this chat.");
+		return;
+	}
+
+	try {
+		const questions = await generateTriviaQuestions(count);
+
+		if (questions.length === 0) {
+			chat.sendMessage("❌ Failed to fetch trivia questions from the API.");
+			console.error('No trivia questions fetched from the API.');
+			return;
+		}
+
+		rapidFireSessions.set(chat.id._serialized, {
+			questions: questions,
+			currentQuestionIndex: -1,
+			timer: null,
+		});
+
+		askNextQuestion(chat);
+	} catch (error) {
+		chat.sendMessage("❌ Failed to start Rapid Fire Questions game.");
+		console.error('Error starting Rapid Fire Questions game:', error.message);
+	}
+}
+
+async function endRapidFire(chat) {
+	if (!rapidFireSessions.has(chat.id._serialized)) {
+		chat.sendMessage("⚠️ Rapid Fire Questions game is not in progress in this chat.");
+		return;
+	}
+
+	rapidFireSessions.delete(chat.id._serialized);
+	chat.sendMessage("🛑 Rapid Fire Questions game has ended.");
+}
+
+async function checkRapidFireAnswer(chat, msg) {
+	const session = rapidFireSessions.get(chat.id._serialized);
+
+	if (!session) {
+		chat.sendMessage("⚠️ Rapid Fire Questions game is not in progress in this chat.");
+		return;
+	}
+
+	const currentQuestion = session.questions[session.currentQuestionIndex];
+
+	if (!currentQuestion || !session.timer) {
+		// No ongoing question or the timer has expired
+		return;
+	}
+
+	clearTimeout(session.timer);
+	session.timer = null;
+
+	const answer = msg.body.split(' ').slice(1).join(' '); // Get the full answer including spaces
+
+	if (answer.toLowerCase() === currentQuestion.answer.toLowerCase()) {
+		chat.sendMessage(`🎉 That's correct! Your answer: ${answer}`);
+		// Continue to the next question or end the game
+		askNextQuestion(chat);
+	} else {
+		chat.sendMessage(`😕 That's incorrect. Your answer: ${answer}. Keep trying!`);
+		// Set a timer to reveal the answer after the default timeout
+		session.timer = setTimeout(() => {
+			session.timer = null;
+			revealAnswer(chat, currentQuestion);
+		}, QUESTION_TIMEOUT); // Delayed reveal after the default timeout
+	}
+}
+
+async function callOpenAIChatAPI(message) {
+	try {
+		const chatCompletion = await openai.createChatCompletion({
+			model: "gpt-3.5-turbo",
+			messages: [{ role: "user", content: message }],
+		});
+		console.log(chatCompletion.data.choices[0].message)
+		return chatCompletion.data.choices[0].message.content;
+	} catch (error) {
+		console.error('Error calling OpenAI API:', error.message);
+		return 'Sorry, I am having trouble processing your request at the moment.';
+	}
+}
+
+async function handleAIChat(chat, message) {
+	const reply = await callOpenAIChatAPI(message);
+
+	console.log("chat returned")
+
+	chat.sendMessage(reply);
+}
+
+async function handleTextToSpeech(chat, message) {
+	const textToSpeechMessage = message.substring(5).trim(); // Remove the '!say' command from the message
+  
+	try {
+	  // Create a new GTTS instance
+	  const tts = new gtts(textToSpeechMessage, 'en');
+	  var timestamp = new Date().getUTCMilliseconds().toString()
+	  var filepath = `./${timestamp}.mp3`
+	  tts.save(filepath, function (err, result) {
+		if(err) { console.log(err) }
+	  });
+	  const base64String = mp3ToBase64(filepath);
+	  const media = new MessageMedia('audio/mpeg', base64String);
+	  chat.sendMessage(media)
+	  fs.unlink(filepath,(err)=>{
+		if(err){
+			console.log(err)
+		}
+	  })
+	} catch (error) {
+	  console.error('Error converting text to speech:', error.message);
+	  chat.sendMessage('Sorry, I am having trouble converting the text to speech at the moment.');
+	}
+  }
+
+
+  function mp3ToBase64(filePath) {
+	try {
+	  // Read the MP3 file as a buffer
+	  const mp3Buffer = fs.readFileSync(filePath);
+  
+	  // Convert the buffer to a base64 string
+	  const base64String = mp3Buffer.toString('base64');
+  
+	  return base64String;
+	} catch (err) {
+	  console.error('Error converting MP3 to base64:', err);
+	  return null;
+	}
+  }
