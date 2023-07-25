@@ -1,5 +1,5 @@
 const express = require("express")
-const { Client, LocalAuth , MessageMedia } = require("whatsapp-web.js")
+const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js")
 const qrcode = require('qrcode-terminal');
 const schedule = require('node-schedule');
 const translate = require('translate-google');
@@ -10,6 +10,7 @@ const port = 3001;
 const http = require('http');
 const { Configuration, OpenAIApi } = require("openai");
 const gtts = require('gtts');
+const yts = require('yt-search')
 const server = http.createServer(app);
 
 
@@ -26,7 +27,7 @@ const GROUPS_DATA_FILE_PATH = './groupsData.json';
 const BIRTHDAYS_DATA_FILE_PATH = './birthdaysData.json';
 const JSERVICE_API_URL = 'http://jservice.io/api/random';
 const QUESTION_TIMEOUT = 20 * 1000;
-const OPENAI_API_KEY = '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';
+const OPENAI_API_KEY = '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';
 
 const configuration = new Configuration({
 	apiKey: OPENAI_API_KEY,
@@ -112,6 +113,7 @@ client.on('message', async (msg) => {
 		const time = timeAndMessage[0].trim();
 		const reminderMessage = timeAndMessage[1].trim();
 		scheduleReminder(time, reminderMessage, msg); // Pass the 'msg' object to the function
+		msg.reply(`Reminder Set For ${time} | ${reminderMessage}`)
 	} else if (msg.body.startsWith('!translate ')) {
 		const targetLanguageAndText = msg.body.replace('!translate ', '').split('|');
 		const targetLanguage = targetLanguageAndText[0].trim();
@@ -230,6 +232,8 @@ client.on('message', async (msg) => {
 			`🔸 *!riddle*: Get a random riddle to solve. \n` +
 			`🔸 *!answer* <your_answer>*: Submit your answer to the current riddle. \n` +
 			`🔸 *@botname* <your_message>*: Chat with the bot using AI(OpenAI). (Mention the bot using its name)\n` +
+			`🔸 *!say* <your_message>*: To convert Text to Audio Speech . \n` +
+			`🔸 *!play* <your_SearchTerm>*: To get vide song as per search result . \n` +
 			`🔸 *!help*: Display this help menu.\n\n` +
 			`Enjoy interacting with the bot! 🔮`;
 
@@ -247,8 +251,19 @@ client.on('message', async (msg) => {
 		handleAIChat(chat, messegenotmen);
 
 	} else if (body.startsWith('!say')) {
-		// handleTextToSpeech(chat, body);
-		await msg.reply("This command is under development")
+		var texttosay = body.replace("!say ", "")
+		textToBase64(texttosay)
+			.then((base64String) => {
+				const media = new MessageMedia('audio/mpeg', base64String);
+				msg.reply(media)
+			})
+			.catch((error) => {
+				console.error('Error converting text to base64:', error);
+			});
+	}else if (body.startsWith('!play')){
+		var texttosearch = body.replace("!play ","")
+		var videourl = await getvideos(texttosearch)
+		await msg.reply(videourl);
 	}
 	//  else {
 	// 	// For other messages, enable AI chat functionality when the bot is mentioned
@@ -671,43 +686,40 @@ async function handleAIChat(chat, message) {
 	chat.sendMessage(reply);
 }
 
-async function handleTextToSpeech(chat, message) {
-	const textToSpeechMessage = message.substring(5).trim(); // Remove the '!say' command from the message
-  
-	try {
-	  // Create a new GTTS instance
-	  const tts = new gtts(textToSpeechMessage, 'en');
-	  var timestamp = new Date().getUTCMilliseconds().toString()
-	  var filepath = `./${timestamp}.mp3`
-	  tts.save(filepath, function (err, result) {
-		if(err) { console.log(err) }
-	  });
-	  const base64String = mp3ToBase64(filepath);
-	  const media = new MessageMedia('audio/mpeg', base64String);
-	  chat.sendMessage(media)
-	  fs.unlink(filepath,(err)=>{
-		if(err){
-			console.log(err)
+function textToBase64(text) {
+	return new Promise((resolve, reject) => {
+		try {
+			// Create a new GTTS instance
+			const tts = new gtts(text, 'en');
+
+			// Get the audio stream
+			const audioStream = tts.stream();
+
+			// Convert the audio stream to a base64 string
+			const audioChunks = [];
+			audioStream.on('data', (chunk) => {
+				audioChunks.push(chunk);
+			});
+
+			audioStream.on('end', () => {
+				const audioBuffer = Buffer.concat(audioChunks);
+				const base64String = audioBuffer.toString('base64');
+				resolve(base64String);
+			});
+
+			audioStream.on('error', (error) => {
+				reject(error);
+			});
+		} catch (error) {
+			reject(error);
 		}
-	  })
-	} catch (error) {
-	  console.error('Error converting text to speech:', error.message);
-	  chat.sendMessage('Sorry, I am having trouble converting the text to speech at the moment.');
-	}
-  }
+	});
+}
 
+async function getvideos(searchtext) {
+    const r = await yts(searchtext)
 
-  function mp3ToBase64(filePath) {
-	try {
-	  // Read the MP3 file as a buffer
-	  const mp3Buffer = fs.readFileSync(filePath);
-  
-	  // Convert the buffer to a base64 string
-	  const base64String = mp3Buffer.toString('base64');
-  
-	  return base64String;
-	} catch (err) {
-	  console.error('Error converting MP3 to base64:', err);
-	  return null;
-	}
-  }
+    const videos = r.videos.slice(0, 3)
+    var video = videos[0].url;
+	return video;
+}
